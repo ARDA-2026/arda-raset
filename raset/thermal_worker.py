@@ -93,9 +93,7 @@ def run(
                 trigger_ts = next_trigger_ts
                 continue
 
-            logger.info("=" * 60)
             logger.info("열화상 판정 완료 — person=%s", person)
-            logger.info("=" * 60)
             bus.verdict_q.put(ThermalVerdict(person=person, ts=time.time()))
             trigger_ts = _wait_for_trigger(bus, stop_event, read_frame_fn, report_url, show, site_lat, site_lon)
     finally:
@@ -223,9 +221,9 @@ def _run_observation(
         new_trigger_ts = bus.trigger_q.get(timeout=PREEMPT_POLL_S)
         if new_trigger_ts is not None:
             if bus.thermal_engaged.is_set():
-                logger.info("[무시됨] 더 높은 확률의 낙하 후보 트리거 수신 — 이미 열원을 추적 중이라 무시하고 계속 관찰")
+                logger.info("[제어권 유지] 더 높은 확률의 낙하 후보 트리거 수신 — 이미 매칭된 대상을 추적 중이라 무시하고 계속 관찰")
             else:
-                logger.info("[대체됨] 더 높은 확률의 낙하 후보 트리거 수신 — 현재 관찰을 중단하고 즉시 재시작")
+                logger.info("[제어권 이동] 더 높은 확률의 낙하 후보 트리거 수신 — 현재 관찰을 중단하고 즉시 재시작")
                 return None, new_trigger_ts
 
         thermal = tb.read_frame(read_frame_fn)
@@ -260,9 +258,9 @@ def _run_observation(
 
         confirmed = detection.matched and consecutive >= required_consecutive
 
-        logger.debug(
-            "[관찰 %d] matched=%s consecutive=%d/%d moving=%s confirmed=%s",
-            frame_number, detection.matched, consecutive, required_consecutive, moving, confirmed,
+        logger.info(
+            "[열화상 매칭시도 %d] matched=%s (%d/%d) confirmed=%s",
+            frame_number, detection.matched, consecutive, required_consecutive, confirmed,
         )
 
         # 실시간 스트리밍 — 관찰(dwell) 중인 동안 매 프레임 기존 lat/lon/time

@@ -102,12 +102,11 @@ def run(
 
                 lat, lon = local_to_latlon(x, y, site_lat, site_lon, site_heading_deg)
 
-                logger.warning("*" * 50)
-                logger.warning("레이더 낙하 판단 — 로컬 X=%.2f Y=%.2f", x, y)
-                logger.warning("*" * 50)
-
                 if not thermal_gate:
-                    logger.warning("낙하 위치(GPS) lat=%.6f lon=%.6f", lat, lon)
+                    logger.warning(
+                        "낙하 위치(GPS) lat=%.6f lon=%.6f confidence=%.2f",
+                        lat, lon, detector.last_fall_confidence,
+                    )
                 elif pending_latlon is None:
                     # 대기 중인 낙하가 없으면 바로 트리거.
                     bus.trigger_q.put(time.time())
@@ -124,17 +123,17 @@ def run(
                     # confidence와 무관하게 선점하지 않는다. arda_servo의
                     # ServoController._thermal_engaged와 같은 원칙: 열화상이
                     # 실제 열원을 붙잡은 순간부터는 열화상이 우선권을 갖는다.
-                    logger.debug(
-                        "더 높은 확률의 낙하 후보(%.2f > %.2f) 발견했지만 열화상이 이미 열원을 "
-                        "추적 중이라 무시함 — 열화상이 우선권을 가짐",
+                    logger.info(
+                        "[제어권 유지] 더 높은 확률의 낙하 후보(%.2f > %.2f) 발견 — 열화상이 "
+                        "이미 열원을 추적 중이라 무시함",
                         detector.last_fall_confidence, pending_confidence,
                     )
                 elif detector.last_fall_confidence > pending_confidence:
                     # 이미 대기 중인 낙하보다 confidence가 더 높다 — 기존 대기를
                     # 포기하고 이 후보로 즉시 대체한다.
                     logger.info(
-                        "더 높은 확률의 낙하 후보 발견(%.2f > %.2f) — 기존 판정 대기 취소, "
-                        "새 트리거 전송 lat=%.6f lon=%.6f",
+                        "[제어권 이동] 더 높은 확률의 낙하 후보 발견(%.2f > %.2f) — 기존 판정 "
+                        "대기 취소, 새 트리거 전송 lat=%.6f lon=%.6f",
                         detector.last_fall_confidence, pending_confidence, lat, lon,
                     )
                     bus.trigger_q.put(time.time())
