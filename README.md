@@ -29,12 +29,22 @@ thermal-camera --(열원 검출 알림, thermal_engaged)----> arda-radar
 
 레이더의 matplotlib 3D 플롯은 GUI 이벤트 루프가 메인 스레드에서만 안전해서
 쓰지 않는다(헤드리스) — 필요하면 `arda-radar`를 단독 실행해서 확인할 것.
-열화상은 `--show-thermal`을 주면 관찰(dwell) 중에 컬러맵 창을 로컬
-디스플레이에 띄운다(`DISPLAY` 필요). 그리고 `site.report_url`이 설정돼
-있으면, 열화상이 낙하 후보를 관찰하는 동안 매 프레임 그 이미지를 함께
-실어 실시간으로 웹에도 스트리밍한다(전송 포맷은 `arda-radar`의
-`send_fall_report()` 참고). `report_url`이 비어 있으면(기본값) 이 전송은
+열화상은 `--show-thermal`을 주면 레이더 트리거 유무와 무관하게 항상
+컬러맵 창을 로컬 디스플레이에 띄운다(`DISPLAY` 필요) — 대기 중에도 매
+프레임 계속 표시된다. 그리고 `site.report_url`이 설정돼 있으면, 대기
+중이든 낙하 후보를 관찰하는 중이든 항상 매 프레임 그 이미지를 함께 실어
+실시간으로 웹에도 스트리밍한다(전송 포맷은 `arda-radar`의
+`send_fall_report()` 참고) — 관찰 중에는 실제 낙하 위치(lat/lon)를, 대기
+중에는 낙하 위치가 없으므로 `arda-radar`의 `site.lat`/`site.lon`(설치
+지점 좌표)을 대신 싣는다. `report_url`이 비어 있으면(기본값) 이 전송은
 발생하지 않는다.
+
+단, 사람 모양 판정(발열 영역 검출·오버레이)은 레이더 트리거가 와서
+관찰(dwell) 중일 때만 돌린다 — 대기 중에는 원본 컬러맵 이미지 그대로만
+보여주고(오버레이 없음), 웹으로 보낼 때도 `confirmed`는 항상 `false`다.
+이미지와 좌표를 별도 요청으로 쪼개지 않고 기존 리포트 포맷 한 번에 얹어
+보내는 쪽이 더 가볍다고 판단해 그렇게 했다. 아무도 안 보는 대기 상태에서
+YOLO 등 무거운 판정을 상시로 돌리지 않기 위한 설계이기도 하다.
 
 ## 사전 준비
 
@@ -63,7 +73,7 @@ arda-raset에 복제하지 않고 각 원본 저장소의 `config/settings.yaml`
 ```bash
 uv run python main.py                                # 전부 실제 하드웨어 (열화상은 threshold 판정)
 uv run python main.py --yolo                          # 열화상 판정을 커스텀 YOLO 모델로
-uv run python main.py --show-thermal                  # 열화상 컬러맵 창을 로컬에 표시
+uv run python main.py --show-thermal                  # 열화상 컬러맵 창을 로컬에 상시 표시
 uv run python main.py --simulate-servo                # 서보만 시뮬레이션
 uv run python main.py --simulate-thermal               # 열화상만 시뮬레이션 (센서 없이 임의 프레임)
 uv run python main.py --no-radar                       # 레이더 강제 생략
@@ -88,7 +98,7 @@ Ctrl+C로 전체 종료(스레드 조인 최대 2초 대기 후 강제 종료 �
 | `--simulate-thermal` | 열화상 센서 없이 임의 프레임 | off |
 | `--no-radar` | 레이더 강제 생략 | off |
 | `--yolo` | 열화상 판정을 YOLO 백엔드로 | off (threshold) |
-| `--show-thermal` | 열화상 컬러맵 창을 로컬 디스플레이에 표시 (`DISPLAY` 필요) | off |
+| `--show-thermal` | 열화상 컬러맵 창을 로컬 디스플레이에 상시 표시 — 대기 중에도 계속 (`DISPLAY` 필요) | off |
 | `--model-path` / `--confidence-threshold` / `--device` | YOLO 전용 | thermal-camera 기본값과 동일 |
 | `--dwell-seconds` / `--required-consecutive` / `--settle-offset` | 열화상 관찰 파라미터 | 10.0 / 3 / 0.15 |
 | `--thermal-pending-timeout` | 레이더가 열화상 판정을 기다리는 최대 시간(초) | 10.0 |

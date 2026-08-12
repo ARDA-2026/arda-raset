@@ -5,15 +5,24 @@ thermal_main.py / thermal_main_yolo.py의 run_observation() 상태기계(대기
 give-up 카운트다운 시작/보류 → 연속매칭 카운트 → 확정/포기 → 회신)를 그대로
 이식하되, UDP 대신 bus 큐를 쓴다.
 
-기본적으로 cv2.imshow(GUI 창)는 안 쓴다 — 대신 관찰(dwell) 중인 동안 매
-프레임(~0.5초 간격) 기존 lat/lon/timestamp 리포트 포맷
-(`arda.utils.send_fall_report`)에 열화상 이미지를 얹어 반복 전송해 실시간
-스트리밍한다. 관찰 중이 아닐 때(대기 상태)는 보낼 위치 컨텍스트가 없으므로
-아무것도 보내지 않는다.
+로컬 표시(show)와 웹 스트리밍(report_url)은 레이더 트리거를 기다리는
+대기 상태에서도 상시로 이뤄진다 — 매 프레임(~0.5초 간격) 계속 읽어
+표시/전송한다. 단, **판정(detect/draw)은 트리거가 와서 관찰(dwell) 중일
+때만** 돌린다 — 대기 중에는 원본 컬러맵 이미지 그대로만 표시/전송한다
+(오버레이 없음, 항상 confirmed=False). 아무도 안 지켜보는데 YOLO 등
+무거운 판정을 상시로 돌리는 낭비를 막기 위함이다.
 
-`show=True`(main.py의 --show-thermal)면 관찰 중인 동안 로컬 디스플레이에도
-컬러맵 창을 띄운다 — report_url 웹 스트리밍과 별개로, DISPLAY가 붙어있는
-환경에서 바로 눈으로 확인하고 싶을 때 쓴다.
+웹으로 보낼 때 실어야 하는 위치도 상태에 따라 다르다: 관찰 중에는 그
+낙하의 실제 lat/lon(`bus.pending_location`)을, 대기 중에는 보낼 낙하
+위치가 없으므로 설치 지점 좌표(site_lat/site_lon, `arda-radar`의
+config/settings.yaml `site.lat/lon`)를 대신 싣는다. 이미지와 좌표를 별도
+요청으로 쪼개지 않고, 기존 lat/lon/timestamp 리포트 포맷
+(`arda.utils.send_fall_report`)에 이미지+confirmed를 얹어 한 번에
+보낸다 — 요청을 둘로 쪼개는 것보다 가볍고 프로토콜도 그대로다.
+
+`show=True`(main.py의 --show-thermal)면 대기/관찰 상태와 무관하게 항상
+로컬 디스플레이에 컬러맵 창을 띄운다 — report_url 웹 스트리밍과 별개로,
+DISPLAY가 붙어있는 환경에서 바로 눈으로 확인하고 싶을 때 쓴다.
 """
 
 import threading
@@ -31,7 +40,7 @@ logger = get_logger(__name__)
 JPEG_QUALITY = 85
 TRIGGER_POLL_S = 0.2  # 트리거 대기 중 stop_event 확인 주기
 PREEMPT_POLL_S = 0.02  # 관찰 중 "더 높은 확률의 새 트리거" 확인 주기
-WINDOW_NAME = "ARDA Thermal — 관찰 중"
+WINDOW_NAME = "ARDA Thermal"
 
 
 def run(
@@ -45,12 +54,17 @@ def run(
     settle_offset: float,
     report_url: str,
     show: bool = False,
+    site_lat: float | None = None,
+    site_lon: float | None = None,
 ) -> None:
     """센서 초기화(`thermal_backend.initialize_sensor`)는 main.py가 스레드를
     띄우기 *전에* 미리 해둔다 — 실패 시(하드웨어 없음) 스레드 자체를 안
     띄우려면 main.py가 먼저 결과를 알아야 하고, I2C를 두 번 초기화하지
     않기 위해서이기도 하다(레이더의 /dev/ttyUSB* 존재 여부 사전 체크와
-    같은 패턴)."""
+    같은 패턴).
+
+    site_lat/site_lon은 대기 상태(관찰 중이 아닐 때) 웹 스트리밍에 실을
+    위치 — 낙하 위치가 아직 없으므로 설치 지점 좌표를 대신 쓴다."""
     try:
         logger.info("열화상 센서 안정화 %d프레임 대기 중...", tb.SENSOR_WARMUP_FRAMES)
         for _ in range(tb.SENSOR_WARMUP_FRAMES):
@@ -59,8 +73,8 @@ def run(
             tb.read_frame(read_frame_fn)
             time.sleep(tb.FRAME_INTERVAL_S)
 
-        logger.info("열화상 대기 중 — 레이더 트리거를 기다립니다")
-        trigger_ts = _wait_for_trigger(bus, stop_event)
+        logger.info("열화상 대기 중 — 레이더 트리거를 기다리며 상시 표시/스트리밍 중")
+        trigger_ts = _wait_for_trigger(bus, stop_event, read_frame_fn, report_url, show, site_lat, site_lon)
         while trigger_ts is not None:
             latency_ms = (time.time() - trigger_ts) * 1000
             logger.info("열화상 트리거 수신(전송 후 %.0fms) — 최대 %.1fs 관찰 시작", latency_ms, dwell_seconds)
@@ -68,6 +82,7 @@ def run(
             person, next_trigger_ts = _run_observation(
                 bus, stop_event, backend, read_frame_fn,
                 dwell_seconds, required_consecutive, settle_offset, report_url, show,
+                site_lat, site_lon,
             )
 
             if stop_event.is_set():
@@ -82,7 +97,7 @@ def run(
             logger.info("열화상 판정 완료 — person=%s", person)
             logger.info("=" * 60)
             bus.verdict_q.put(ThermalVerdict(person=person, ts=time.time()))
-            trigger_ts = _wait_for_trigger(bus, stop_event)
+            trigger_ts = _wait_for_trigger(bus, stop_event, read_frame_fn, report_url, show, site_lat, site_lon)
     finally:
         if show:
             cv2.destroyAllWindows()
@@ -92,13 +107,86 @@ def run(
     logger.info("열화상 종료")
 
 
-def _wait_for_trigger(bus: Bus, stop_event: threading.Event) -> float | None:
-    """새 트리거 1건을 받을 때까지 짧은 타임아웃으로 반복 폴링. stop_event가
-    켜지면 None을 반환해 상위 루프가 빠져나가게 한다."""
+def _publish_frame(
+    backend: tb.Backend,
+    color_image,
+    detection: tb.Detection,
+    confirmed: bool,
+    report_url: str,
+    lat: float | None,
+    lon: float | None,
+    show: bool,
+) -> None:
+    """판정 결과를 오버레이해 로컬 창(show)과 웹 스트리밍(report_url)에 반영.
+    관찰(observation) 중에만 쓴다 — 대기 중(판정 없음)은 `_publish_idle_frame`.
+
+    lat/lon이 없으면(웹 URL이 있어도) 전송하지 않는다."""
+    streaming = bool(report_url) and lat is not None and lon is not None
+    if not streaming and not show:
+        return
+
+    backend.draw(color_image, detection, confirmed)
+    if streaming:
+        ok, buf = cv2.imencode(".jpg", color_image, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
+        if ok:
+            send_fall_report(report_url, lat, lon, image_jpeg=buf.tobytes(), confirmed=confirmed)
+    if show:
+        cv2.imshow(WINDOW_NAME, color_image)
+        cv2.waitKey(1)
+
+
+def _publish_idle_frame(
+    color_image,
+    report_url: str,
+    lat: float | None,
+    lon: float | None,
+    show: bool,
+) -> None:
+    """대기(트리거 없음) 중 — 판정(detect/draw)을 돌리지 않고 원본 컬러맵
+    이미지 그대로만 로컬 창/웹에 반영한다(confirmed는 항상 False, 이미지+
+    좌표를 한 요청에 얹어 보내는 기존 리포트 포맷 그대로).
+
+    lat/lon이 없으면(웹 URL이 있어도) 전송하지 않는다."""
+    streaming = bool(report_url) and lat is not None and lon is not None
+    if not streaming and not show:
+        return
+
+    if streaming:
+        ok, buf = cv2.imencode(".jpg", color_image, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
+        if ok:
+            send_fall_report(report_url, lat, lon, image_jpeg=buf.tobytes(), confirmed=False)
+    if show:
+        cv2.imshow(WINDOW_NAME, color_image)
+        cv2.waitKey(1)
+
+
+def _wait_for_trigger(
+    bus: Bus,
+    stop_event: threading.Event,
+    read_frame_fn,
+    report_url: str,
+    show: bool,
+    site_lat: float | None,
+    site_lon: float | None,
+) -> float | None:
+    """새 트리거 1건을 받을 때까지 짧은 타임아웃으로 반복 폴링하되, show나
+    report_url이 켜져 있으면 대기 중에도 매 프레임 읽어(판정 없이) 원본
+    이미지를 로컬 표시/웹 스트리밍한다(위치는 설치 지점 좌표로 대체). 둘 다
+    꺼져 있으면(기존 동작 그대로) 센서를 건드리지 않고 트리거만 기다린다.
+    stop_event가 켜지면 None을 반환해 상위 루프가 빠져나가게 한다."""
+    idle_publish = bool(show or report_url)
     while not stop_event.is_set():
         ts = bus.trigger_q.get(timeout=TRIGGER_POLL_S)
         if ts is not None:
             return ts
+        if not idle_publish:
+            continue
+
+        thermal = tb.read_frame(read_frame_fn)
+        if thermal is None:
+            continue
+        color_image = tb.create_absolute_colormap(thermal)
+        _publish_idle_frame(color_image, report_url, site_lat, site_lon, show)
     return None
 
 
@@ -112,6 +200,8 @@ def _run_observation(
     settle_offset: float,
     report_url: str,
     show: bool = False,
+    site_lat: float | None = None,
+    site_lon: float | None = None,
 ) -> tuple[bool | None, float | None]:
     """사람 모양 발열 영역이 required_consecutive 프레임 연속으로 잡히면
     (True, None)을, dwell_seconds 동안 못 잡으면(포기) (False, None)을 반환.
@@ -176,19 +266,13 @@ def _run_observation(
         )
 
         # 실시간 스트리밍 — 관찰(dwell) 중인 동안 매 프레임 기존 lat/lon/time
-        # 리포트 포맷에 이미지를 얹어 반복 전송한다(사용자 지시). 관찰 중이
-        # 아니면(pending_location 없음) 보낼 위치 컨텍스트가 없어 전송 안 함.
+        # 리포트 포맷에 이미지를 얹어 반복 전송한다. 보통 pending_location에
+        # 이번 낙하의 실제 위치가 있지만(radar_worker가 트리거 직전에 set),
+        # 혹시 없는 경우에도(레이스 등) 상시 스트리밍이 끊기지 않도록 설치
+        # 지점 좌표로 대체한다.
         loc = bus.pending_location.get()
-        streaming = loc is not None and report_url
-        if streaming or show:
-            backend.draw(color_image, detection, confirmed)
-        if streaming:
-            ok, buf = cv2.imencode(".jpg", color_image, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
-            if ok:
-                send_fall_report(report_url, loc.lat, loc.lon, image_jpeg=buf.tobytes(), confirmed=confirmed)
-        if show:
-            cv2.imshow(WINDOW_NAME, color_image)
-            cv2.waitKey(1)
+        lat, lon = (loc.lat, loc.lon) if loc is not None else (site_lat, site_lon)
+        _publish_frame(backend, color_image, detection, confirmed, report_url, lat, lon, show)
 
         if confirmed:
             bus.thermal_pan_q.put(ThermalPan(

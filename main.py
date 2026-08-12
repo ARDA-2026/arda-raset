@@ -12,7 +12,7 @@
   uv run python main.py                                # 전부 실제 하드웨어
   uv run python main.py --simulate-servo --simulate-thermal --no-radar
   uv run python main.py --yolo                          # 열화상 판정을 YOLO로
-  uv run python main.py --show-thermal                  # 열화상 컬러맵 창을 로컬에 표시
+  uv run python main.py --show-thermal                  # 열화상 컬러맵 창을 로컬에 상시 표시
 """
 
 import argparse
@@ -67,7 +67,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--simulate-thermal", action="store_true", help="열화상 센서 없이 임의 프레임")
     parser.add_argument("--no-radar", action="store_true", help="레이더 강제 생략")
     parser.add_argument("--yolo", action="store_true", help="열화상 판정을 YOLO 백엔드로 (기본: threshold)")
-    parser.add_argument("--show-thermal", action="store_true", help="열화상 컬러맵 창을 로컬 디스플레이에 띄움 (DISPLAY 환경변수 필요)")
+    parser.add_argument("--show-thermal", action="store_true", help="열화상 컬러맵 창을 로컬 디스플레이에 상시 표시 — 대기 중에도 계속 (DISPLAY 환경변수 필요)")
     parser.add_argument("--model-path", default=None, help="YOLO 모델(.pt) 경로 (기본: thermal-camera/models/t1_ver3.pt)")
     parser.add_argument("--confidence-threshold", type=float, default=0.4, help="YOLO 검출 신뢰도 임계값")
     parser.add_argument("--device", default="cuda", help="YOLO 추론 디바이스 ('cuda' 또는 'cpu')")
@@ -108,9 +108,12 @@ def main() -> int:
         Path(args.servo_config) if args.servo_config else servo_dir / "config" / "settings.yaml"
     )
 
-    report_url = load_settings(radar_settings_path).get("site", {}).get("report_url", "")
+    site_cfg = load_settings(radar_settings_path).get("site", {})
+    report_url = site_cfg.get("report_url", "")
+    site_lat = site_cfg.get("lat")
+    site_lon = site_cfg.get("lon")
     if report_url:
-        logger.info("웹 리포트 전송 활성화 — %s (열화상 관찰 중 실시간 스트리밍 포함)", report_url)
+        logger.info("웹 리포트 전송 활성화 — %s (열화상 상시 스트리밍 포함, 대기 중엔 설치 지점 좌표 사용)", report_url)
     else:
         logger.info("site.report_url이 비어 있어 웹 리포트/열화상 스트리밍은 전송되지 않습니다")
 
@@ -165,7 +168,7 @@ def main() -> int:
             _spawn(
                 "thermal", thermal_worker.run, bus, stop_event, backend, read_frame_fn, i2c,
                 args.dwell_seconds, args.required_consecutive, args.settle_offset, report_url,
-                show_thermal,
+                show_thermal, site_lat, site_lon,
             )
             thermal_started = True
 
