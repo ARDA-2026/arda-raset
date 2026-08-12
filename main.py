@@ -68,7 +68,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-radar", action="store_true", help="레이더 강제 생략")
     parser.add_argument("--yolo", action="store_true", help="열화상 판정을 YOLO 백엔드로 (기본: threshold)")
     parser.add_argument("--show-thermal", action="store_true", help="열화상 컬러맵 창을 로컬 디스플레이에 상시 표시 — 대기 중에도 계속 (DISPLAY 환경변수 필요)")
-    parser.add_argument("--model-path", default=None, help="YOLO 모델(.pt) 경로 (기본: thermal-camera/models/t1_ver3.pt)")
+    parser.add_argument("--model-path", default=None, help="YOLO 모델(.pt) 경로 (기본: thermal-camera/models/s_yolo26.pt)")
     parser.add_argument("--confidence-threshold", type=float, default=0.4, help="YOLO 검출 신뢰도 임계값")
     parser.add_argument("--device", default="cuda", help="YOLO 추론 디바이스 ('cuda' 또는 'cpu')")
     parser.add_argument("--dwell-seconds", type=float, default=10.0, help="열화상 트리거 후 최대 관찰 시간(초)")
@@ -156,7 +156,7 @@ def main() -> int:
     else:
         try:
             if args.yolo:
-                model_path = args.model_path or str(thermal_dir / "models" / "t1_ver3.pt")
+                model_path = args.model_path or str(thermal_dir / "models" / "s_yolo26.pt")
                 backend = thermal_backend.YoloBackend(model_path, args.device, args.confidence_threshold)
             else:
                 backend = thermal_backend.ThresholdBackend()
