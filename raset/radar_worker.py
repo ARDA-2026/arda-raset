@@ -103,23 +103,24 @@ def run(
 
                 lat, lon = local_to_latlon(x, y, site_lat, site_lon, site_heading_deg)
 
-                if not thermal_gate:
-                    logger.warning(
-                        "낙하 위치(GPS) lat=%.6f lon=%.6f confidence=%.2f",
-                        lat, lon, detector.last_fall_confidence,
-                    )
-                elif pending_latlon is None:
+                # fall_detector가 확정한 낙하(track#)와 여기서 계산한 GPS
+                # 좌표를 한 줄로 합쳐서 낸다 — 예전에는 fall_detector가
+                # "FALL DETECTED"를, 여기서 별도로 lat/lon을 두 줄로 나눠
+                # 찍었다.
+                logger.warning(
+                    "FALL DETECTED [track#%d] lat=%.6f lon=%.6f confidence=%.2f",
+                    detector.last_fall_track_id, lat, lon, detector.last_fall_confidence,
+                )
+
+                if thermal_gate and pending_latlon is None:
                     # 대기 중인 낙하가 없으면 바로 트리거.
                     bus.trigger_q.put(time.time())
                     bus.pending_location.set(lat, lon)
                     pending_latlon = (lat, lon)
                     pending_confidence = detector.last_fall_confidence
                     pending_since = time.time()
-                    logger.info(
-                        "열화상 판정 요청 전송 — lat=%.6f lon=%.6f confidence=%.2f, 회신 대기 중",
-                        lat, lon, pending_confidence,
-                    )
-                elif bus.thermal_engaged.is_set():
+                    logger.info("열화상 판정 요청 전송 — 회신 대기 중")
+                elif thermal_gate and bus.thermal_engaged.is_set():
                     # 열화상이 이미 대기 중인 낙하에서 원하는 모양과 매칭돼
                     # 추적 중이다 — confidence와 무관하게 선점하지 않는다.
                     # arda_servo의 ServoController._thermal_engaged와 같은
@@ -130,7 +131,7 @@ def run(
                         "이미 매칭된 대상을 추적 중이라 무시함",
                         detector.last_fall_confidence, pending_confidence,
                     )
-                elif detector.last_fall_confidence > pending_confidence:
+                elif thermal_gate and detector.last_fall_confidence > pending_confidence:
                     # 이미 대기 중인 낙하보다 confidence가 더 높다 — 기존 대기를
                     # 포기하고 이 후보로 즉시 대체한다.
                     logger.info(
