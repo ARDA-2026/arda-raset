@@ -7,8 +7,9 @@ report_url POST·열화상 게이트의 pending/preemption/timeout 로직까지 
 ThermalVerdictReceiver가 bus 큐로 교체된 것, 열화상 트리거를 보내는/거두는
 시점에 bus.pending_location도 같이 세팅/해제하는 것(실시간 스트리밍이 읽는
 "지금 관찰 중인 낙하의 위치"), 그리고 confidence 기반 선점 조건에
-bus.thermal_engaged 체크가 추가된 것이다 — 열화상이 이미 열원을 붙잡아
-추적 중이면(arda_servo.ServoController._thermal_engaged와 같은 원칙)
+bus.thermal_engaged 체크가 추가된 것이다 — 열화상이 원하는 모양과 이미
+매칭돼 추적 중이면(arda_servo.ServoController._thermal_engaged와 같은
+원칙 — 단순히 열이 감지된 것만으로는 engaged가 되지 않는다)
 confidence가 더 높은 새 후보가 와도 선점하지 않는다(arda-radar/main.py의
 원본 로직은 이 체크가 없어 별도로 수정함, arda-radar 참고).
 
@@ -119,13 +120,14 @@ def run(
                         lat, lon, pending_confidence,
                     )
                 elif bus.thermal_engaged.is_set():
-                    # 열화상이 이미 대기 중인 낙하의 열원을 붙잡아 추적 중이다 —
-                    # confidence와 무관하게 선점하지 않는다. arda_servo의
-                    # ServoController._thermal_engaged와 같은 원칙: 열화상이
-                    # 실제 열원을 붙잡은 순간부터는 열화상이 우선권을 갖는다.
+                    # 열화상이 이미 대기 중인 낙하에서 원하는 모양과 매칭돼
+                    # 추적 중이다 — confidence와 무관하게 선점하지 않는다.
+                    # arda_servo의 ServoController._thermal_engaged와 같은
+                    # 원칙: 열화상이 원하는 모양과 매칭되기 시작한 순간부터는
+                    # 열화상이 우선권을 갖는다.
                     logger.info(
                         "[제어권 유지] 더 높은 확률의 낙하 후보(%.2f > %.2f) 발견 — 열화상이 "
-                        "이미 열원을 추적 중이라 무시함",
+                        "이미 매칭된 대상을 추적 중이라 무시함",
                         detector.last_fall_confidence, pending_confidence,
                     )
                 elif detector.last_fall_confidence > pending_confidence:

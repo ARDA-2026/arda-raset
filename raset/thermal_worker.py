@@ -206,11 +206,15 @@ def _run_observation(
 
     더 높은 확률의 새 트리거가 오면 원칙적으로 (None, 새 트리거 ts)를 반환해
     호출부가 판정 없이 그 트리거로 즉시 재관찰을 시작하게 한다 — 단, 이번
-    관찰에서 이미 발열 영역을 한 번이라도 검출했다면(bus.thermal_engaged)
-    새 트리거를 무시하고 지금 추적을 계속한다. 레이더 좌표는 대략적인 초기
-    조준일 뿐이고, 열화상이 실제 열원을 붙잡은 순간부터는 열화상이 우선권을
-    갖는다는 원칙(arda_servo.ServoController._thermal_engaged와 동일)을
-    여기서도 지켜야, 서보가 실제로 보고 있는 지점과 열화상이 판정하는
+    관찰에서 원하는 모양과 이미 한 번이라도 매칭됐다면(bus.thermal_engaged,
+    즉 detection.matched=True가 처음 나온 시점부터 — required_consecutive
+    중 1/N째) 새 트리거를 무시하고 지금 추적을 계속한다. 단순히 배경보다
+    뜨거운 영역이 있다는 것만으로는(detection.grid_xy is not None이지만
+    matched=False) engaged로 치지 않는다 — 사람 모양이 아닌 열원(반사광,
+    손 등)에 선점권을 뺏기지 않기 위함이다. 레이더 좌표는 대략적인 초기
+    조준일 뿐이고, 열화상이 원하는 모양과 매칭되기 시작한 순간부터는
+    열화상이 우선권을 갖는다는 원칙(arda_servo.ServoController._thermal_engaged와
+    동일)을 여기서도 지켜야, 서보가 실제로 보고 있는 지점과 열화상이 판정하는
     지점이 어긋나지 않는다."""
     consecutive = 0
     frame_number = 0
@@ -233,7 +237,9 @@ def _run_observation(
 
         color_image = tb.create_absolute_colormap(thermal)
         detection = backend.detect(thermal, color_image)
-        if detection.grid_xy is not None:
+        if detection.matched:
+            # 원하는 모양과 "처음" 매칭된 순간(=consecutive가 1이 되는 시점)부터
+            # 제어권을 넘긴다 — 그냥 열이 감지된 것만으로는(grid_xy) 넘기지 않는다.
             bus.thermal_engaged.set()
 
         offset = None
@@ -243,7 +249,13 @@ def _run_observation(
             gx, gy = detection.grid_xy
             offset = tb.offset_from_circle_x(gx)
             vertical_offset = tb.offset_from_circle_y(gy)
-            bus.thermal_pan_q.put(ThermalPan(offset=offset, ts=time.time(), vertical_offset=vertical_offset))
+            # matched를 함께 실어 보낸다 — arda_servo.ServoController도 이
+            # 프레임이 원하는 모양과 매칭됐을 때만(_thermal_engaged) 서보
+            # 제어권을 넘겨받도록 raset/thermal_worker.py와 동일한 기준을 쓴다.
+            bus.thermal_pan_q.put(ThermalPan(
+                offset=offset, ts=time.time(), vertical_offset=vertical_offset,
+                matched=detection.matched,
+            ))
             moving = abs(offset) > settle_offset
 
         if moving:
