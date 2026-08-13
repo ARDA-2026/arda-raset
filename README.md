@@ -100,7 +100,7 @@ Ctrl+C로 전체 종료(스레드 조인 최대 2초 대기 후 강제 종료 �
 | `--yolo` | 열화상 판정을 YOLO 백엔드로 | off (threshold) |
 | `--show-thermal` | 열화상 컬러맵 창을 로컬 디스플레이에 상시 표시 — 대기 중에도 계속 (`DISPLAY` 필요) | off |
 | `--model-path` / `--confidence-threshold` / `--device` | YOLO 전용 | thermal-camera 기본값과 동일 |
-| `--dwell-seconds` / `--required-consecutive` / `--settle-offset` | 열화상 관찰 파라미터 | 10.0 / 3 / 0.15 |
+| `--dwell-seconds` / `--required-matches` / `--settle-offset` | 열화상 관찰 파라미터(확정에 필요한 매칭 횟수는 누적 카운트 — 연속일 필요 없음) | 10.0 / 3 / 0.15 |
 | `--thermal-pending-timeout` | 레이더가 열화상 판정을 기다리는 최대 시간(초) | 10.0 |
 | `--radar-cli-port` / `--radar-data-port` | 레이더 시리얼 포트 | /dev/ttyUSB0 / ttyUSB1 |
 | `--radar-settings` / `--radar-profile` / `--servo-config` | 원본 저장소 설정 파일 경로 | 형제 디렉터리 기준 |

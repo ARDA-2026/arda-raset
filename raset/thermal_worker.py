@@ -2,7 +2,7 @@
 
 thermal_main.py / thermal_main_yolo.py의 run_observation() 상태기계(대기
 트리거 폴링 → 프레임 읽기 → 판정 → 서보 추적보정 전송 → settle 여부로
-give-up 카운트다운 시작/보류 → 연속매칭 카운트 → 확정/포기 → 회신)를 그대로
+give-up 카운트다운 시작/보류 → 누적매칭 카운트 → 확정/포기 → 회신)를 그대로
 이식하되, UDP 대신 bus 큐를 쓴다.
 
 로컬 표시(show)와 웹 스트리밍(report_url)은 레이더 트리거를 기다리는
@@ -50,7 +50,7 @@ def run(
     read_frame_fn,
     i2c,
     dwell_seconds: float,
-    required_consecutive: int,
+    required_matches: int,
     settle_offset: float,
     report_url: str,
     show: bool = False,
@@ -81,7 +81,7 @@ def run(
 
             person, next_trigger_ts = _run_observation(
                 bus, stop_event, backend, read_frame_fn,
-                dwell_seconds, required_consecutive, settle_offset, report_url, show,
+                dwell_seconds, required_matches, settle_offset, report_url, show,
                 site_lat, site_lon,
             )
 
@@ -194,20 +194,21 @@ def _run_observation(
     backend: tb.Backend,
     read_frame_fn,
     dwell_seconds: float,
-    required_consecutive: int,
+    required_matches: int,
     settle_offset: float,
     report_url: str,
     show: bool = False,
     site_lat: float | None = None,
     site_lon: float | None = None,
 ) -> tuple[bool | None, float | None]:
-    """사람 모양 발열 영역이 required_consecutive 프레임 연속으로 잡히면
-    (True, None)을, dwell_seconds 동안 못 잡으면(포기) (False, None)을 반환.
+    """사람 모양 발열 영역이 이번 관찰(dwell) 동안 누적으로 required_matches
+    번 잡히면(연속일 필요 없음) (True, None)을, dwell_seconds 동안 그만큼
+    못 채우면(포기) (False, None)을 반환.
 
     더 높은 확률의 새 트리거가 오면 원칙적으로 (None, 새 트리거 ts)를 반환해
     호출부가 판정 없이 그 트리거로 즉시 재관찰을 시작하게 한다 — 단, 이번
     관찰에서 원하는 모양과 이미 한 번이라도 매칭됐다면(bus.thermal_engaged,
-    즉 detection.matched=True가 처음 나온 시점부터 — required_consecutive
+    즉 detection.matched=True가 처음 나온 시점부터 — required_matches
     중 1/N째) 새 트리거를 무시하고 지금 추적을 계속한다. 단순히 배경보다
     뜨거운 영역이 있다는 것만으로는(detection.grid_xy is not None이지만
     matched=False) engaged로 치지 않는다 — 사람 모양이 아닌 열원(반사광,
@@ -216,7 +217,7 @@ def _run_observation(
     열화상이 우선권을 갖는다는 원칙(arda_servo.ServoController._thermal_engaged와
     동일)을 여기서도 지켜야, 서보가 실제로 보고 있는 지점과 열화상이 판정하는
     지점이 어긋나지 않는다."""
-    consecutive = 0
+    match_count = 0
     frame_number = 0
     give_up_deadline: float | None = None
     bus.thermal_engaged.clear()
@@ -238,7 +239,7 @@ def _run_observation(
         color_image = tb.create_absolute_colormap(thermal)
         detection = backend.detect(thermal, color_image)
         if detection.matched:
-            # 원하는 모양과 "처음" 매칭된 순간(=consecutive가 1이 되는 시점)부터
+            # 원하는 모양과 "처음" 매칭된 순간(=match_count가 1이 되는 시점)부터
             # 제어권을 넘긴다 — 그냥 열이 감지된 것만으로는(grid_xy) 넘기지 않는다.
             bus.thermal_engaged.set()
 
@@ -264,15 +265,13 @@ def _run_observation(
             give_up_deadline = time.monotonic() + dwell_seconds
 
         if detection.matched:
-            consecutive += 1
-        elif not moving:
-            consecutive = 0
+            match_count += 1
 
-        confirmed = detection.matched and consecutive >= required_consecutive
+        confirmed = detection.matched and match_count >= required_matches
 
         logger.info(
             "[열화상 매칭시도 %d] matched=%s (%d/%d) confirmed=%s",
-            frame_number, detection.matched, consecutive, required_consecutive, confirmed,
+            frame_number, detection.matched, match_count, required_matches, confirmed,
         )
 
         # 실시간 스트리밍 — 관찰(dwell) 중인 동안 매 프레임 기존 lat/lon/time

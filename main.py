@@ -72,7 +72,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--confidence-threshold", type=float, default=0.4, help="YOLO 검출 신뢰도 임계값")
     parser.add_argument("--device", default="cuda", help="YOLO 추론 디바이스 ('cuda' 또는 'cpu')")
     parser.add_argument("--dwell-seconds", type=float, default=10.0, help="열화상 트리거 후 최대 관찰 시간(초)")
-    parser.add_argument("--required-consecutive", type=int, default=3, help="열화상 확정에 필요한 연속 매칭 프레임 수")
+    parser.add_argument("--required-matches", type=int, default=3, help="열화상 확정에 필요한 누적 매칭 횟수(연속일 필요 없음)")
     parser.add_argument("--settle-offset", type=float, default=0.15, help="서보 settle 판단 기준 (정규화 -1.0~1.0)")
     parser.add_argument("--thermal-pending-timeout", type=float, default=10.0, help="레이더가 열화상 판정을 기다리는 최대 시간(초)")
     parser.add_argument("--radar-cli-port", default="/dev/ttyUSB0", help="레이더 CLI 시리얼 포트")
@@ -167,7 +167,7 @@ def main() -> int:
         else:
             _spawn(
                 "thermal", thermal_worker.run, bus, stop_event, backend, read_frame_fn, i2c,
-                args.dwell_seconds, args.required_consecutive, args.settle_offset, report_url,
+                args.dwell_seconds, args.required_matches, args.settle_offset, report_url,
                 show_thermal, site_lat, site_lon,
             )
             thermal_started = True
