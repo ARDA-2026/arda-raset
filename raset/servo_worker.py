@@ -79,6 +79,7 @@ def run(bus: Bus, stop_event: threading.Event, cfg: dict, simulate: bool) -> Non
         site_lat=site_cfg.get("lat"),
         site_lon=site_cfg.get("lon"),
         site_heading_deg=site_cfg.get("heading_deg", 0.0),
+        report_url=site_cfg.get("report_url", ""),
     )
 
     servo.set_angle(center_deg)  # run_forever()가 시작 시 하던 일 그대로 재현

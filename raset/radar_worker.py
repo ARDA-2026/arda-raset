@@ -2,8 +2,10 @@
 
 arda-radar/main.py의 main() 루프를 그대로 이식한다 — 센서 프레임 읽기 →
 클러스터링 → FallDetector.update() → 낙하 확정 시 dedup·좌표변환·GPS 로그·
-report_url POST·열화상 게이트의 pending/preemption/timeout 로직까지 거의
-동일하게 유지한다. 바뀐 건 UDP CoordSender/ThermalTriggerSender/
+열화상 게이트의 pending/preemption/timeout 로직까지 거의 동일하게 유지한다
+(report_url POST는 이제 여기서 하지 않는다 — 열화상 추적으로 보정된 최종
+좌표를 아는 쪽은 arda-servo뿐이라, raset/servo_worker.py가 그 보고를
+담당한다). 바뀐 건 UDP CoordSender/ThermalTriggerSender/
 ThermalVerdictReceiver가 bus 큐로 교체된 것, 열화상 트리거를 보내는/거두는
 시점에 bus.pending_location도 같이 세팅/해제하는 것(실시간 스트리밍이 읽는
 "지금 관찰 중인 낙하의 위치"), 그리고 confidence 기반 선점 조건에
@@ -31,7 +33,6 @@ from arda.utils import (
     load_processing_config,
     load_settings,
     local_to_latlon,
-    send_fall_report,
 )
 
 from .bus import Bus, Coord
@@ -48,7 +49,6 @@ def run(
     settings_path: Path,
     thermal_gate: bool,
     thermal_pending_timeout: float,
-    report_url: str,
 ) -> None:
     settings = load_settings(settings_path)
     site_cfg = settings.get("site", {})
@@ -150,9 +150,10 @@ def run(
                 if verdict is not None and pending_latlon is not None:
                     vlat, vlon = pending_latlon
                     if verdict.person:
+                        # report_url 전송은 여기서 하지 않는다 — vlat/vlon은 레이더
+                        # 최초 감지 좌표일 뿐이고, 열화상 추적 보정 좌표 전송은
+                        # servo_worker.py(ServoController._end_tracking())가 담당한다.
                         logger.warning("낙하 위치(GPS) lat=%.6f lon=%.6f — 열화상 확인됨", vlat, vlon)
-                        if report_url:
-                            send_fall_report(report_url, vlat, vlon)
                     else:
                         logger.info("낙하 판정 기각 — 열화상에서 사람 미확인 (lat=%.6f lon=%.6f)", vlat, vlon)
                     pending_latlon = None

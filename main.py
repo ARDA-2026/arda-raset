@@ -184,7 +184,7 @@ def main() -> int:
         _spawn(
             "radar", radar_worker.run, bus, stop_event,
             args.radar_cli_port, args.radar_data_port, radar_profile_path, radar_settings_path,
-            thermal_started, args.thermal_pending_timeout, report_url,
+            thermal_started, args.thermal_pending_timeout,
         )
 
     logger.info("arda-raset 전부 시작됨 (Ctrl+C로 종료)")
