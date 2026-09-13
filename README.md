@@ -101,6 +101,10 @@ Ctrl+C로 전체 종료(스레드 조인 최대 2초 대기 후 강제 종료 �
 | `--show-thermal` | 열화상 컬러맵 창을 로컬 디스플레이에 상시 표시 — 대기 중에도 계속 (`DISPLAY` 필요) | off |
 | `--model-path` / `--confidence-threshold` / `--device` | YOLO 전용 | thermal-camera 기본값과 동일 |
 | `--dwell-seconds` / `--required-matches` / `--settle-offset` | 열화상 관찰 파라미터(확정에 필요한 매칭 횟수는 누적 카운트 — 연속일 필요 없음) | 10.0 / 3 / 0.15 |
-| `--thermal-pending-timeout` | 레이더가 열화상 판정을 기다리는 최대 시간(초) | 10.0 |
+| `--dwell-margin-seconds` | `--thermal-pending-timeout`/`--servo-dwell-seconds`가 자동(-1)일 때 공통으로 쓰는 안전 마진(초) — `dwell_seconds + 이 값`이 상한 | 30.0 |
+| `--thermal-pending-timeout` | 레이더가 열화상 판정을 기다리는 최대 시간(초). -1=자동으로 `dwell_seconds+dwell_margin_seconds` 사용 — `dwell_seconds`와 같거나 작으면 verdict가 유실되는 실측 버그가 있었음 | -1.0(자동) |
+| `--servo-dwell-seconds` | 서보가 dwell 중 마지막 조준 각도에서 버티는 시간(초). -1=자동으로 `max(arda-servo yaml 값, dwell_seconds+dwell_margin_seconds)` 사용 | -1.0(자동) |
+| `--report-url` | 노트북(hanriver.py) 웹 리포트 수신 주소 — 열화상 스트리밍과 낙하 확정 최종 좌표 둘 다 이 값 하나로 통일해서 보냄. 생략하면 `main.py` 상단 `DEFAULT_REPORT_URL` 사용(arda-radar/arda-servo 각 설정 파일의 `site.report_url`은 raset 실행 시 더 이상 안 읽음 — 그 저장소들을 raset 없이 단독 실행할 때만 쓰임). 빈 문자열이면 전송 끔 | `DEFAULT_REPORT_URL`(main.py 상단) |
+| `--site-lat` / `--site-lon` / `--site-heading-deg` | 설치 지점 위도/경도/방위각 — 레이더 좌표계 변환, 열화상 스트리밍 위치, 서보 낙하 확정 위경도 계산에 전부 이 값 하나로 통일해서 씀. 생략하면 `main.py` 상단 `DEFAULT_SITE_LAT`/`DEFAULT_SITE_LON`/`DEFAULT_SITE_HEADING_DEG` 사용(arda-radar/arda-servo 각 설정 파일의 `site.lat`/`site.lon`/`site.heading_deg`는 raset 실행 시 더 이상 안 읽음 — 단독 실행할 때만 쓰임) | `DEFAULT_SITE_*`(main.py 상단) |
 | `--radar-cli-port` / `--radar-data-port` | 레이더 시리얼 포트 | /dev/ttyUSB0 / ttyUSB1 |
 | `--radar-settings` / `--radar-profile` / `--servo-config` | 원본 저장소 설정 파일 경로 | 형제 디렉터리 기준 |
