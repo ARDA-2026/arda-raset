@@ -23,6 +23,16 @@ config/settings.yaml `site.lat/lon`)를 대신 싣는다. 이미지와 좌표를
 `show=True`(main.py의 --show-thermal)면 대기/관찰 상태와 무관하게 항상
 로컬 디스플레이에 컬러맵 창을 띄운다 — report_url 웹 스트리밍과 별개로,
 DISPLAY가 붙어있는 환경에서 바로 눈으로 확인하고 싶을 때 쓴다.
+
+웹/로컬로는 실제 온도 그대로인 절대 컬러맵(`create_absolute_colormap`)과
+YOLO 입력용 배경-상대 보정 컬러맵(`create_relative_colormap`) 둘 다 매
+프레임 같이 실어 보낸다(`thermal_image_base64`/`thermal_image_yolo_base64`,
+`arda.utils.send_fall_report`) — 어느 쪽을 볼지는 재요청 없이 웹 쪽에서
+그 자리에서 토글로 고른다. 판정(detect) 자체는 항상 각 백엔드가 내부적으로
+쓰는 이미지로 고정돼 이 선택과 무관하게 전혀 바뀌지 않는다(ThresholdBackend는
+raw thermal 배열만 보고, YoloBackend.detect()는 넘겨받은 color_image 인자를
+무시하고 자기 안에서 create_relative_colormap을 다시 계산한다 —
+thermal_backend.py 참고).
 """
 
 import threading
@@ -105,9 +115,15 @@ def run(
     logger.info("열화상 종료")
 
 
+def _encode_jpeg(image) -> bytes | None:
+    ok, buf = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
+    return buf.tobytes() if ok else None
+
+
 def _publish_frame(
     backend: tb.Backend,
-    color_image,
+    absolute_image,
+    yolo_image,
     detection: tb.Detection,
     confirmed: bool,
     report_url: str,
@@ -118,23 +134,34 @@ def _publish_frame(
     """판정 결과를 오버레이해 로컬 창(show)과 웹 스트리밍(report_url)에 반영.
     관찰(observation) 중에만 쓴다 — 대기 중(판정 없음)은 `_publish_idle_frame`.
 
+    absolute_image(실제 온도)/yolo_image(YOLO 입력용 배경-상대 보정) 둘 다
+    오버레이를 그려서 한 요청에 같이 실어 보낸다 — 웹 쪽이 재요청 없이
+    그 자리에서 토글로 어느 쪽을 볼지 고른다. 로컬 창(show)은 absolute_image만
+    띄운다(디버깅용 단일 창이라 굳이 둘 다 띄울 필요 없음).
+
     lat/lon이 없으면(웹 URL이 있어도) 전송하지 않는다."""
     streaming = bool(report_url) and lat is not None and lon is not None
     if not streaming and not show:
         return
 
-    backend.draw(color_image, detection, confirmed)
+    backend.draw(absolute_image, detection, confirmed)
+    backend.draw(yolo_image, detection, confirmed)
     if streaming:
-        ok, buf = cv2.imencode(".jpg", color_image, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
-        if ok:
-            send_fall_report(report_url, lat, lon, image_jpeg=buf.tobytes(), confirmed=confirmed)
+        abs_bytes = _encode_jpeg(absolute_image)
+        yolo_bytes = _encode_jpeg(yolo_image)
+        if abs_bytes is not None:
+            send_fall_report(
+                report_url, lat, lon, image_jpeg=abs_bytes, image_jpeg_yolo=yolo_bytes,
+                confirmed=confirmed,
+            )
     if show:
-        cv2.imshow(WINDOW_NAME, color_image)
+        cv2.imshow(WINDOW_NAME, absolute_image)
         cv2.waitKey(1)
 
 
 def _publish_idle_frame(
-    color_image,
+    absolute_image,
+    yolo_image,
     report_url: str,
     lat: float | None,
     lon: float | None,
@@ -142,7 +169,8 @@ def _publish_idle_frame(
 ) -> None:
     """대기(트리거 없음) 중 — 판정(detect/draw)을 돌리지 않고 원본 컬러맵
     이미지 그대로만 로컬 창/웹에 반영한다(confirmed는 항상 False, 이미지+
-    좌표를 한 요청에 얹어 보내는 기존 리포트 포맷 그대로).
+    좌표를 한 요청에 얹어 보내는 기존 리포트 포맷 그대로). absolute_image/
+    yolo_image 둘 다 같이 보낸다 — `_publish_frame` 참고.
 
     lat/lon이 없으면(웹 URL이 있어도) 전송하지 않는다."""
     streaming = bool(report_url) and lat is not None and lon is not None
@@ -150,11 +178,15 @@ def _publish_idle_frame(
         return
 
     if streaming:
-        ok, buf = cv2.imencode(".jpg", color_image, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
-        if ok:
-            send_fall_report(report_url, lat, lon, image_jpeg=buf.tobytes(), confirmed=False)
+        abs_bytes = _encode_jpeg(absolute_image)
+        yolo_bytes = _encode_jpeg(yolo_image)
+        if abs_bytes is not None:
+            send_fall_report(
+                report_url, lat, lon, image_jpeg=abs_bytes, image_jpeg_yolo=yolo_bytes,
+                confirmed=False,
+            )
     if show:
-        cv2.imshow(WINDOW_NAME, color_image)
+        cv2.imshow(WINDOW_NAME, absolute_image)
         cv2.waitKey(1)
 
 
@@ -183,8 +215,9 @@ def _wait_for_trigger(
         thermal = tb.read_frame(read_frame_fn)
         if thermal is None:
             continue
-        color_image = tb.create_absolute_colormap(thermal)
-        _publish_idle_frame(color_image, report_url, site_lat, site_lon, show)
+        absolute_image = tb.create_absolute_colormap(thermal)
+        yolo_image = tb.create_relative_colormap(thermal)
+        _publish_idle_frame(absolute_image, yolo_image, report_url, site_lat, site_lon, show)
     return None
 
 
@@ -236,8 +269,9 @@ def _run_observation(
             continue
         frame_number += 1
 
-        color_image = tb.create_absolute_colormap(thermal)
-        detection = backend.detect(thermal, color_image)
+        absolute_image = tb.create_absolute_colormap(thermal)
+        yolo_image = tb.create_relative_colormap(thermal)
+        detection = backend.detect(thermal, absolute_image)
         if detection.matched:
             # 원하는 모양과 "처음" 매칭된 순간(=match_count가 1이 되는 시점)부터
             # 제어권을 넘긴다 — 그냥 열이 감지된 것만으로는(grid_xy) 넘기지 않는다.
@@ -269,9 +303,15 @@ def _run_observation(
 
         confirmed = detection.matched and match_count >= required_matches
 
+        # "사람인지" 판정에 실제로 쓰이는 수치 중 YOLO의 confidence만 로그에
+        # 추가로 보인다(threshold 백엔드는 대응하는 단일 수치가 없어
+        # detection_detail()이 confidence를 안 채움 — 그대로 생략됨).
+        conf = tb.detection_detail(detection).get("confidence")
+        conf_note = f" conf={conf:.2f}" if conf is not None else ""
+
         logger.info(
-            "[열화상 매칭시도 %d] matched=%s (%d/%d) confirmed=%s",
-            frame_number, detection.matched, match_count, required_matches, confirmed,
+            "[열화상 매칭시도 %d] matched=%s%s (%d/%d) confirmed=%s",
+            frame_number, detection.matched, conf_note, match_count, required_matches, confirmed,
         )
 
         # 실시간 스트리밍 — 관찰(dwell) 중인 동안 매 프레임 기존 lat/lon/time
@@ -281,7 +321,7 @@ def _run_observation(
         # 지점 좌표로 대체한다.
         loc = bus.pending_location.get()
         lat, lon = (loc.lat, loc.lon) if loc is not None else (site_lat, site_lon)
-        _publish_frame(backend, color_image, detection, confirmed, report_url, lat, lon, show)
+        _publish_frame(backend, absolute_image, yolo_image, detection, confirmed, report_url, lat, lon, show)
 
         if confirmed:
             bus.thermal_pan_q.put(ThermalPan(

@@ -16,6 +16,7 @@ from typing import Any
 import numpy as np
 
 import thermal_main
+import thermal_main_yolo
 
 WIDTH = thermal_main.WIDTH
 HEIGHT = thermal_main.HEIGHT
@@ -27,6 +28,14 @@ read_frame = thermal_main.read_frame
 create_absolute_colormap = thermal_main.create_absolute_colormap
 offset_from_circle_x = thermal_main.offset_from_circle_x
 offset_from_circle_y = thermal_main.offset_from_circle_y
+
+# 배경-상대 보정 컬러맵(YOLO 입력 전용, thermal_main_yolo.py 참고) — YOLO
+# 모델 로드(무거움, 지연 import)와 달리 이 함수는 순수 numpy/cv2 연산이라
+# 백엔드 종류(threshold/YOLO)와 무관하게 항상 가져다 쓸 수 있다. 웹
+# 스트리밍에서 "욜로가 보는 이미지"를 고를 때(thermal_worker.py의
+# stream_view 옵션) threshold 백엔드로 실행 중이어도 이 미리보기를 그대로
+# 쓸 수 있게 하기 위함.
+create_relative_colormap = thermal_main_yolo.create_relative_colormap
 
 
 @dataclass
@@ -72,8 +81,14 @@ class YoloBackend(Backend):
 
     def detect(self, thermal, color_image):
         mod = self._mod
+        # 화면 표시/스트리밍용 color_image(실제 온도 그대로, 절대 범위)는 안
+        # 쓰고, 배경(중앙값) 기준 상대 보정 컬러맵을 따로 만들어 YOLO에
+        # 넣는다 — 배경 온도가 바뀌어도 "사람-배경 온도차"가 학습 때와
+        # 비슷한 색 대비로 나오게 하기 위함(mod.create_relative_colormap
+        # 참고 — thermal_main_yolo.py에 구현돼 있음).
+        yolo_input = mod.create_relative_colormap(thermal)
         candidates = mod.detect_person_candidates(
-            color_image, self.model, self.device, self.confidence_threshold,
+            yolo_input, self.model, self.device, self.confidence_threshold,
         )
         best = mod.best_candidate(candidates)
         grid_xy = mod.candidate_to_grid_xy(best) if best else None
@@ -82,3 +97,36 @@ class YoloBackend(Backend):
     def draw(self, image, detection, confirmed):
         candidates, best = detection.state
         self._mod.draw_person_candidates(image, candidates, best, confirmed)
+
+
+def detection_detail(detection: Detection) -> dict:
+    """detection.state(백엔드별로 구조가 다름)에서 "사람인지" 판정에 실제로
+    쓰이는 수치를 뽑아 공용 dict로 만든다 — 로그/진단 전용, 판정 로직 자체는
+    읽기만 하고 손대지 않는다.
+
+    ThresholdBackend(기본)는 원형도(circularity)/종횡비/채움비율/코어중심
+    오프셋 — 전부 thermal_main.is_head_shape()가 실제로 비교하는 값과
+    그 임계값을 같이 넣어서, 지금 값이 임계값에 얼마나 가까운지("사람인지
+    잡는 그 포인트") 바로 볼 수 있게 한다. YoloBackend(--yolo)는 최고
+    확률 후보의 confidence만 있다."""
+    state = detection.state
+    if isinstance(state, dict):  # ThresholdBackend — thermal_main.detect_hot_region() 반환값
+        return {
+            "backend": "threshold",
+            "circularity": state.get("circularity"),
+            "circularity_min": thermal_main.MIN_CIRCULARITY,
+            "aspect_ratio": state.get("aspect_ratio"),
+            "aspect_ratio_range": [thermal_main.MIN_ASPECT_RATIO, thermal_main.MAX_ASPECT_RATIO],
+            "fill_ratio": state.get("fill_ratio"),
+            "fill_ratio_min": thermal_main.MIN_FILL_RATIO,
+            "core_center_offset_ratio": state.get("core_center_offset_ratio"),
+            "core_center_offset_ratio_max": thermal_main.MAX_CORE_CENTER_OFFSET_RATIO,
+            "pixel_area": state.get("pixel_area"),
+        }
+    if isinstance(state, tuple) and len(state) == 2:  # YoloBackend — (candidates, best)
+        _candidates, best = state
+        return {
+            "backend": "yolo",
+            "confidence": best.get("confidence") if best else None,
+        }
+    return {"backend": "none"}  # 이번 프레임은 발열 영역 자체를 못 찾음(state=None)
