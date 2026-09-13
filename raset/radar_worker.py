@@ -31,7 +31,6 @@ from arda.radar import IWR6843Sensor
 from arda.utils import (
     get_logger,
     load_processing_config,
-    load_settings,
     local_to_latlon,
 )
 
@@ -49,13 +48,15 @@ def run(
     settings_path: Path,
     thermal_gate: bool,
     thermal_pending_timeout: float,
+    site_lat: float = 0.0,
+    site_lon: float = 0.0,
+    site_heading_deg: float = 0.0,
 ) -> None:
-    settings = load_settings(settings_path)
-    site_cfg = settings.get("site", {})
-    site_lat = site_cfg.get("lat", 0.0)
-    site_lon = site_cfg.get("lon", 0.0)
-    site_heading_deg = site_cfg.get("heading_deg", 0.0)
-
+    """site_lat/site_lon/site_heading_deg는 settings_path(site 섹션)가 아니라
+    호출자(main.py)가 인자로 넘긴 값을 그대로 쓴다 — main.py 상단의
+    DEFAULT_SITE_LAT/--site-lat 등 참고(report_url과 같은 이유로 통일함).
+    settings_path는 여전히 load_processing_config()의 레이더 처리 설정
+    (cluster_eps 등)에만 쓰인다."""
     cfg = load_processing_config(settings_path)
 
     sensor = IWR6843Sensor(cli_port, data_port)

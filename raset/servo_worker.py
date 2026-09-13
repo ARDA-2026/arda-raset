@@ -10,6 +10,12 @@ KeyboardInterrupt를 자체적으로 잡는데, 백그라운드 스레드는 SIG
 받으므로 재사용할 수 없다 — 대신 `run_forever()`가 시작 시 하던 일(홈
 포지션으로 1회 이동)만 그대로 재현하고, 직접 만든 stop_event 기반 루프에서
 `step()`을 반복 호출한다.
+
+report_url/site_lat/site_lon/site_heading_deg는 cfg(arda-servo/config/
+settings.yaml)가 아니라 호출자(main.py)가 인자로 넘긴 값을 그대로 쓴다 —
+main.py 상단의 DEFAULT_REPORT_URL/DEFAULT_SITE_LAT/--report-url/--site-lat
+등 참고. arda-servo를 이 raset 없이 단독 실행할 때(arda-servo/main.py)는
+여전히 자기 yaml의 site 섹션을 그대로 쓴다.
 """
 
 import threading
@@ -23,7 +29,16 @@ from .bus import Bus, QueueReceiver
 logger = get_logger(__name__)
 
 
-def run(bus: Bus, stop_event: threading.Event, cfg: dict, simulate: bool) -> None:
+def run(
+    bus: Bus,
+    stop_event: threading.Event,
+    cfg: dict,
+    simulate: bool,
+    report_url: str = "",
+    site_lat: float = 0.0,
+    site_lon: float = 0.0,
+    site_heading_deg: float = 0.0,
+) -> None:
     servo_cfg = cfg["servo"]
 
     servo = PanServo(
@@ -54,8 +69,6 @@ def run(bus: Bus, stop_event: threading.Event, cfg: dict, simulate: bool) -> Non
         camera_tilt_deg = geometry_cfg.get("tilt_deg")
         vertical_fov_deg = geometry_cfg.get("vertical_fov_deg")
 
-    site_cfg = cfg.get("site") or {}
-
     # bus.coord_q는 레이더 스레드가 아예 안 뜨는 경우(USB 없음/--no-radar)에도
     # 항상 존재한다 — ServoController.step()이 self._receiver.recv()를
     # 무조건(None 체크 없이) 호출하므로 receiver=None이면 첫 스텝에서 죽는다.
@@ -76,10 +89,10 @@ def run(bus: Bus, stop_event: threading.Event, cfg: dict, simulate: bool) -> Non
         install_height_m=install_height_m,
         camera_tilt_deg=camera_tilt_deg,
         vertical_fov_deg=vertical_fov_deg,
-        site_lat=site_cfg.get("lat"),
-        site_lon=site_cfg.get("lon"),
-        site_heading_deg=site_cfg.get("heading_deg", 0.0),
-        report_url=site_cfg.get("report_url", ""),
+        site_lat=site_lat,
+        site_lon=site_lon,
+        site_heading_deg=site_heading_deg,
+        report_url=report_url,
     )
 
     servo.set_angle(center_deg)  # run_forever()가 시작 시 하던 일 그대로 재현
