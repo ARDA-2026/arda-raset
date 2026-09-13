@@ -21,6 +21,15 @@ arda-radar --(관찰 중인 낙하 위치, pending_location)--> thermal-camera
 thermal-camera --(열원 검출 알림, thermal_engaged)----> arda-radar
 ```
 
+`thermal_engaged`는 열화상이 원하는 모양과 한 번이라도 매칭돼 대상을
+붙잡은 뒤로는 레이더가 confidence 기반으로 그 대상을 선점하지 않게 하는
+용도다. 사람 확정 직후에도 같은 열원이 시야에 남아있으면 레이더가 같은
+대상을 오탐지로 다시 낙하 후보로 잡아 새 트리거를 보낼 수 있는데, 이를
+막기 위해 확정된 열원이 시야에서 완전히 사라질 때까지는 새 트리거를
+전부 무시하고 계속 지켜본다(`raset/thermal_worker.py`의
+`_wait_for_target_to_clear()`) — 그렇지 않으면 웹 리포트 전송 등 확정
+시퀀스가 같은 사람에 대해 중복 실행된다(실기 시연에서 재현된 문제).
+
 `arda_servo.controller.ServoController.step()`처럼 원본 프로젝트의 코드는
 글자 하나 안 바뀐 채 그대로 재사용된다 — UDP 소켓 대신 큐를 감싼 어댑터를
 넘겨줄 뿐이다.
@@ -31,13 +40,19 @@ thermal-camera --(열원 검출 알림, thermal_engaged)----> arda-radar
 쓰지 않는다(헤드리스) — 필요하면 `arda-radar`를 단독 실행해서 확인할 것.
 열화상은 `--show-thermal`을 주면 레이더 트리거 유무와 무관하게 항상
 컬러맵 창을 로컬 디스플레이에 띄운다(`DISPLAY` 필요) — 대기 중에도 매
-프레임 계속 표시된다. 그리고 `site.report_url`이 설정돼 있으면, 대기
+프레임 계속 표시된다. 그리고 `--report-url`이 설정돼 있으면, 대기
 중이든 낙하 후보를 관찰하는 중이든 항상 매 프레임 그 이미지를 함께 실어
 실시간으로 웹에도 스트리밍한다(전송 포맷은 `arda-radar`의
 `send_fall_report()` 참고) — 관찰 중에는 실제 낙하 위치(lat/lon)를, 대기
-중에는 낙하 위치가 없으므로 `arda-radar`의 `site.lat`/`site.lon`(설치
-지점 좌표)을 대신 싣는다. `report_url`이 비어 있으면(기본값) 이 전송은
-발생하지 않는다.
+중에는 낙하 위치가 없으므로 `--site-lat`/`--site-lon`(설치 지점 좌표,
+`main.py` 상단 `DEFAULT_SITE_LAT`/`DEFAULT_SITE_LON`)을 대신 싣는다.
+`--report-url`이 비어 있으면 이 전송은 발생하지 않는다.
+
+이미지는 매 프레임 실제 온도 그대로인 절대 컬러맵과 YOLO 입력용
+배경-상대 보정 컬러맵 두 장을 함께 싣는다(`thermal_image_base64`/
+`thermal_image_yolo_base64`) — 재요청 없이 웹 쪽에서 그 자리에서 토글로
+어느 쪽을 볼지 고를 수 있다. 판정(detect) 자체는 이 선택과 무관하게
+항상 각 백엔드가 내부적으로 쓰는 이미지로 고정된다.
 
 단, 사람 모양 판정(발열 영역 검출·오버레이)은 레이더 트리거가 와서
 관찰(dwell) 중일 때만 돌린다 — 대기 중에는 원본 컬러맵 이미지 그대로만
@@ -45,6 +60,11 @@ thermal-camera --(열원 검출 알림, thermal_engaged)----> arda-radar
 이미지와 좌표를 별도 요청으로 쪼개지 않고 기존 리포트 포맷 한 번에 얹어
 보내는 쪽이 더 가볍다고 판단해 그렇게 했다. 아무도 안 보는 대기 상태에서
 YOLO 등 무거운 판정을 상시로 돌리지 않기 위한 설계이기도 하다.
+
+관찰 중 매 프레임 찍히는 판정 로그("[열화상 매칭시도 N] ...")에는 YOLO
+백엔드일 때 검출 confidence가 같이 남는다(threshold 백엔드는 confidence
+개념이 없어 생략됨). 레이더의 낙하 판정 로그("FALL DETECTED ...")에도
+그 판정의 confidence가 항상 함께 남는다.
 
 ## 사전 준비
 
@@ -63,10 +83,20 @@ uv sync --extra yolo    # --yolo 쓰려면 추가 (Jetson CUDA torch는 jetson-a
 형제 디렉터리로 있다고 가정한다. 다른 위치에 있으면 `ARDA_RADAR_DIR` /
 `ARDA_SERVO_DIR` / `ARDA_THERMAL_DIR` 환경변수로 지정할 수 있다.
 
-설정 파일(사이트 GPS, 서보 GPIO 핀, 카메라 geometry, `report_url` 등)은
-arda-raset에 복제하지 않고 각 원본 저장소의 `config/settings.yaml`을 그대로
-읽는다 — 단일 소스 유지. 다른 경로를 쓰려면 `--radar-settings` /
-`--radar-profile` / `--servo-config`로 지정.
+설정 파일 중 서보 GPIO 핀·카메라 geometry는 arda-raset에 복제하지 않고
+`arda-servo`의 `config/settings.yaml`을 그대로 읽는다 — 단일 소스 유지.
+다른 경로를 쓰려면 `--radar-settings` / `--radar-profile` /
+`--servo-config`로 지정.
+
+반면 설치 지점 GPS(`site.lat`/`site.lon`/`site.heading_deg`)와
+`report_url`은 이제 각 원본 저장소의 설정 파일을 읽지 않는다 —
+`main.py` 상단의 `DEFAULT_SITE_LAT`/`DEFAULT_SITE_LON`/
+`DEFAULT_SITE_HEADING_DEG`/`DEFAULT_REPORT_URL`(또는 `--site-lat` 등
+실행 인자)로 이 저장소가 직접 소유하며, 레이더 좌표계 변환·열화상
+스트리밍 위치·서보 낙하 확정 위경도 계산에 전부 이 값 하나로 통일해서
+쓴다. `arda-radar`/`arda-servo` 각 설정 파일의 같은 키는 그 저장소를
+raset 없이 단독 실행할 때만 쓰이고, raset 실행 시에는 무시된다 —
+자세한 내용은 아래 CLI 옵션의 `--report-url`/`--site-lat` 항목 참고.
 
 ## 사용법
 
