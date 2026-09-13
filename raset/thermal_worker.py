@@ -33,6 +33,15 @@ YOLO 입력용 배경-상대 보정 컬러맵(`create_relative_colormap`) 둘 �
 raw thermal 배열만 보고, YoloBackend.detect()는 넘겨받은 color_image 인자를
 무시하고 자기 안에서 create_relative_colormap을 다시 계산한다 —
 thermal_backend.py 참고).
+
+사람이 확정된 뒤 그 열원이 아직 시야에 남아있는데 레이더가 같은 대상을
+오탐지로 다시 낙하 후보로 잡아 새 트리거를 보내는 경우가 있다 — 그대로
+두면 `_wait_for_trigger()`가 그 트리거를 새 낙하로 받아들여 확정 시퀀스
+(웹 리포트 전송 등)가 같은 사람에 대해 중복 실행된다(실기 시연에서
+재현됨). 이를 막기 위해 확정 직후에는 곧장 `_wait_for_trigger()`로
+돌아가지 않고 `_wait_for_target_to_clear()`를 거친다 — 확정된 그 열원이
+시야에서 완전히 사라질 때까지 새 트리거를 전부 무시하고 계속 지켜보다가,
+사라진 뒤에야 정상적으로 새 트리거를 받는 상태로 복귀한다.
 """
 
 import threading
@@ -105,6 +114,18 @@ def run(
 
             logger.info("열화상 판정 완료 — person=%s", person)
             bus.verdict_q.put(ThermalVerdict(person=person, ts=time.time()))
+
+            if person:
+                # 확정된 대상이 아직 시야에 있는 동안은 새 트리거를 전부
+                # 무시하고 계속 지켜본다 — 모듈 docstring의 재확정 중복
+                # 실행 방지 설명 참고.
+                _wait_for_target_to_clear(
+                    bus, stop_event, backend, read_frame_fn,
+                    dwell_seconds, report_url, show, site_lat, site_lon,
+                )
+                if stop_event.is_set():
+                    break
+
             trigger_ts = _wait_for_trigger(bus, stop_event, read_frame_fn, report_url, show, site_lat, site_lon)
     finally:
         if show:
@@ -338,3 +359,67 @@ def _run_observation(
     bus.thermal_pan_q.put(ThermalPan(offset=0.0, ts=time.time(), give_up=True))
     logger.info("[열화상] 관찰 실패 — 추적 포기 신호 전송")
     return False, None
+
+
+def _wait_for_target_to_clear(
+    bus: Bus,
+    stop_event: threading.Event,
+    backend: tb.Backend,
+    read_frame_fn,
+    dwell_seconds: float,
+    report_url: str,
+    show: bool,
+    site_lat: float | None,
+    site_lon: float | None,
+) -> None:
+    """사람 확정 직후 호출됨 — 확정된 그 열원이 시야에서 완전히 사라질
+    때까지 새 레이더 트리거를 전부 무시하고 계속 지켜본다.
+
+    막으려는 문제: 확정 직후에도 그 열원이 그대로 남아있는데, 레이더가
+    (오탐지로) 같은 대상을 또 낙하 후보로 잡아 새 트리거를 보내는 경우가
+    있다. `run()`이 곧장 `_wait_for_trigger()`로 돌아가면 그 트리거를
+    새 낙하로 받아들여 확정 시퀀스(웹 리포트 전송 등)가 같은 사람에 대해
+    처음부터 다시 실행돼버린다 — 실기 시연에서 재현된 문제.
+
+    서보 재조준은 하지 않는다 — 확정 신호(ThermalPan.confirmed=True)를
+    이미 보낸 시점에 arda_servo.controller.ServoController._end_tracking()이
+    dwell을 끝내버려서, 그 뒤에 보정을 더 보내도 dwell이 비활성 상태라
+    반응하지 않는다(ServoController.step()은 dwell 활성 중에만 ThermalPan을
+    처리함). 그래서 여기서는 열원이 그대로 있는지만 확인하고(서보를 다시
+    움직이려 시도하지 않음) 새 트리거 억제에만 집중한다.
+
+    "사라졌다"는 판정은 dwell_seconds와 같은 기준(그만큼 연속으로
+    grid_xy조차 하나도 안 잡히면 사라진 것으로 봄)을 재사용한다 — 새
+    파라미터를 늘리지 않기 위함."""
+    absent_deadline: float | None = None  # None이면 아직 열원이 보이는 중
+
+    while not stop_event.is_set():
+        discarded_ts = bus.trigger_q.get(timeout=PREEMPT_POLL_S)
+        if discarded_ts is not None:
+            logger.info("[제어권 유지] 확정된 대상이 아직 시야에 있어 새 트리거 무시")
+
+        thermal = tb.read_frame(read_frame_fn)
+        if thermal is None:
+            continue
+
+        absolute_image = tb.create_absolute_colormap(thermal)
+        yolo_image = tb.create_relative_colormap(thermal)
+        detection = backend.detect(thermal, absolute_image)
+
+        if detection.grid_xy is not None:
+            absent_deadline = None
+        elif absent_deadline is None:
+            absent_deadline = time.monotonic() + dwell_seconds
+
+        loc = bus.pending_location.get()
+        lat, lon = (loc.lat, loc.lon) if loc is not None else (site_lat, site_lon)
+        _publish_frame(
+            backend, absolute_image, yolo_image, detection, bool(detection.matched),
+            report_url, lat, lon, show,
+        )
+
+        if absent_deadline is not None and time.monotonic() >= absent_deadline:
+            logger.info("[열화상] 확정된 대상이 시야에서 사라짐 — 새 트리거를 받는 상태로 복귀")
+            return
+
+        time.sleep(tb.FRAME_INTERVAL_S)
